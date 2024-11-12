@@ -6,6 +6,7 @@ and to test the significance of the difference in accuracy of those predictions 
 import numpy as np
 import pandas as pd
 import time
+import warnings
 from tqdm.autonotebook import tqdm
 
 from sklearn.model_selection import GroupShuffleSplit, GridSearchCV, train_test_split
@@ -35,12 +36,10 @@ add_krakencoder_package() #add krakencoder package to path if not already there
 from krakencoder.train import random_train_test_split_groups
 
 
-#define run_model_fit
-
 def fit_prediction_model(Data, demo_var_list, input_flavors, cvnum=10, gridloops=3, trainfrac=.8, resample_loops=0, randseed_base=None, 
                   print_prediction=True, plot_prediction=False, include_predicted_and_true_in_output=False,
                   residualize_names=[], residualize_age=True, residualize_sex=True, 
-                  ignore_warnings=True):
+                  auto_expand_gridloops=0, ignore_warnings=True, return_predictor=False):
     """
     Fit a prediction model to predict demographic variables from connectome data.
     
@@ -50,6 +49,7 @@ def fit_prediction_model(Data, demo_var_list, input_flavors, cvnum=10, gridloops
     input_flavors: list of str. list of input data types to use (eg: enc_FCmean)
     cvnum: int. number of cross-validation splits (default=10)
     gridloops: int. number of grid search depth level (default=3)
+    auto_expand_gridloops: int. number of times to expand the search range if the best hyperparameter is at the edge of the grid (default=0)
     trainfrac: float. fraction of data to use for training within crossval (default=.8)
     resample_loops: int. number of resampling loops to perform (default=0=no resampling)
     randseed_base: int. random seed to use for resampling (default=None)
@@ -86,6 +86,8 @@ def fit_prediction_model(Data, demo_var_list, input_flavors, cvnum=10, gridloops
         family_id=np.arange(len(subjects))
 
     df_performance_resample=[]
+    
+    predictor_object_list=[]
     
     for iresample in tqdm(range(max(1,resample_loops))):
         if randseed_base is None:
@@ -188,8 +190,7 @@ def fit_prediction_model(Data, demo_var_list, input_flavors, cvnum=10, gridloops
                 if demo_var_name == 'Sex':
                     #demo_var=Tdemo['Gender']=='M' #1 = male
                     labelenc=LabelEncoder()
-                    demo_var=pd.Series(labelenc.fit_transform(Tdemo['Gender']))
-                    
+                    demo_var=pd.Series(labelenc.fit_transform(Tdemo['Gender'])) #Appears to encode M=1, F=0
                     #dummyvar_full=np.array(Tdemo['Strength_AgeAdj']=='M').astype(float)[:,np.newaxis]
                     #print("Adding dummy variable for Strength to predict Sex")
                     is_logistic=True
@@ -296,8 +297,8 @@ def fit_prediction_model(Data, demo_var_list, input_flavors, cvnum=10, gridloops
                         #grid={"alpha":np.logspace(-4,4,7)}# l1 lasso l2 ridge
                         gridspace_info={"alpha":"logspace"}
                         #since KernelRidge doesn't handle intercepts, need to remove/replace them
-                        y_transformer=FunctionTransformer(func=lambda v:v-np.mean(y_outer),
-                                                        inverse_func=lambda v:v+np.mean(y_outer))
+                        y_transformer=FunctionTransformer(func=lambda v,m=np.mean(y_outer):v-m,
+                                                        inverse_func=lambda v,m=np.mean(y_outer):v+m)
 
 
                     #grid={"alpha":np.logspace(-4,4,7),"l1_ratio":np.linspace(0,1,7)}
@@ -318,7 +319,10 @@ def fit_prediction_model(Data, demo_var_list, input_flavors, cvnum=10, gridloops
                                                             cv=cv_splitter,
                                                             grid=grid,
                                                             gridspace_info=gridspace_info, 
-                                                            num_loops=gridloops, scoring=scoring_name)
+                                                            num_loops=gridloops, 
+                                                            auto_expand_loops=auto_expand_gridloops,
+                                                            scoring=scoring_name, 
+                                                            data_name='%s->%s' % (xtype,demo_var_name))
 
                 if print_prediction:
                     print("best params:",reg_cv.best_params_)
@@ -376,6 +380,12 @@ def fit_prediction_model(Data, demo_var_list, input_flavors, cvnum=10, gridloops
                     
                 df_performance=pd.concat((df_performance,pd.DataFrame([perf_tmp])),ignore_index=True)
                 
+                predictor_object_list.append({'predictor':reg_cv, 
+                                              'idx_train':idx_train_notnan, 
+                                              'idx_holdout':idx_holdout_notnan,
+                                              'y_transformer':y_transformer,
+                                              'metric_fun':metric_fun})
+                
                 if plot_prediction and iresample==0:
                     plt.figure()
                     #plt.subplot(len(demo_var_list),1,idemo+1)
@@ -400,9 +410,12 @@ def fit_prediction_model(Data, demo_var_list, input_flavors, cvnum=10, gridloops
                     plt.show()
         df_performance_resample.append(df_performance.copy())
         
-    return pd.concat(df_performance_resample)
+    if return_predictor:
+        return pd.concat(df_performance_resample), predictor_object_list
+    else:
+        return pd.concat(df_performance_resample)
 
-def gridsearchcv_iterative(data,estimator,cv,grid,gridspace_info={}, num_loops=3, scoring=None):
+def gridsearchcv_iterative(data,estimator,cv,grid,gridspace_info={}, num_loops=3, scoring=None, auto_expand_loops=0, data_name=None):
     """
     Perform grid search cross-validation with iterative grid search.
     
@@ -417,41 +430,87 @@ def gridsearchcv_iterative(data,estimator,cv,grid,gridspace_info={}, num_loops=3
         * example: gridspace_info={"C":"logspace"} will use logspace values for the 'C' hyperparameter. could also be 'linspace'
     num_loops: int. number of grid search depth levels (default=3)
     scoring: str. name of scoring metric to use (default=None). 'r2','accuracy','balanced_accuracy'
+    auto_expand_loops: int. number of times to expand the search range if the best hyperparameter is at the edge of the grid (default=0)
+    data_name: str (optional). name of data being fit (for printing). (default=None)
     
     Returns:
     reg_cv: sklearn GridSearchCV object, containing the best estimator
     cv_results: dictionary of cross-validation results
     """
     cv_results={'params':[],'mean_test_score':[]}
-    for igrid in range(num_loops):
+    is_grid_edge={k:True for k in grid.keys()}
+    
+    #ignore singular matrix warnings until the last zoom level
+    warnings.filterwarnings("ignore", message=r'Singular matrix')
+    
+    num_loops_orig=num_loops
+    
+    #for igrid in range(num_loops):
+    igrid=0
+    while igrid < num_loops:
+        did_expand=False
         if igrid>0:
             grid_new={}
             for k in grid.keys():
                 if k in gridspace_info and gridspace_info[k] == 'logspace':
                     newrange=lambda v1,v2,n: np.logspace(np.log10(v1),np.log10(v2),n)
+                    #define additional ranges for expanding the grid to the left or right
+                    dv=np.median(np.diff(np.log10(grid[k])))
+                    newrange0=lambda v1,v2,n: np.logspace(np.log10(v1)-dv,np.log10(v2)-dv,n) #shift the range
+                    newrangeN=lambda v1,v2,n: np.logspace(np.log10(v1)+dv,np.log10(v2)+dv,n)
                 else:
                     newrange=lambda v1,v2,n: np.linspace(v1,v2,n)
-                    
+                    #define additional ranges for expanding the grid to the left or right
+                    dv=np.median(np.diff(grid[k]))
+                    newrange0=lambda v1,v2,n: np.linspace(v1-dv,v2-dv,n) #shift the range
+                    newrangeN=lambda v1,v2,n: np.linspace(v1+dv,v2+dv,n)
                 try:
                     #use argmin(abs(list-x)) to avoid some numerical precision mismatch
                     idx=np.argmin(np.abs(np.array(grid[k])-reg_cv.best_params_[k]))
-
+                    
                     if idx==0:
-                        grid_new[k]=newrange(grid[k][0],grid[k][1],len(grid[k]))
+                        if auto_expand_loops>0:
+                            did_expand=True
+                            grid_new[k]=newrange0(grid[k][0], grid[k][-1], len(grid[k])) #shift the whole range
+                        else:
+                            grid_new[k]=newrange(grid[k][0], grid[k][1], len(grid[k]))
                     elif idx==len(grid[k])-1:
-                        grid_new[k]=newrange(grid[k][-2],grid[k][-1],len(grid[k]))
+                        if auto_expand_loops>0:
+                            did_expand=True
+                            grid_new[k]=newrangeN(grid[k][0], grid[k][-1], len(grid[k])) #shift the whole range
+                        else:
+                            grid_new[k]=newrange(grid[k][-2], grid[k][-1], len(grid[k]))
                     else:
-                        grid_new[k]=newrange(grid[k][idx-1],grid[k][idx+1],len(grid[k]))
+                        is_grid_edge[k]=False
+                        grid_new[k]=newrange(grid[k][idx-1], grid[k][idx+1], len(grid[k]))
                 except:
                     grid_new[k]=grid[k]
 
             grid=grid_new.copy()
         reg_cv=GridSearchCV(estimator,grid,cv=cv,scoring=scoring)
+        
+        if did_expand:
+            num_loops=num_loops_orig+auto_expand_loops
+            
+        if igrid==num_loops-1:
+            #show singular matrix warnings on last iteration
+            warnings.filterwarnings("default", message=r'Singular matrix')
+            
         reg_cv.fit(**data)
-
+        
         cv_results['params']+=reg_cv.cv_results_['params']
         cv_results['mean_test_score']=np.concatenate((cv_results['mean_test_score'],reg_cv.cv_results_['mean_test_score']))
         
+        igrid+=1
+        
+    #Print warning message if hyperparameter is at edge of grid
+    for k in grid.keys():
+        if is_grid_edge[k]:
+            if data_name:
+                print("Warning: edge of grid for %s (%s): %g. Consider expanding search range" % (data_name,k,reg_cv.best_params_[k]))
+            else:
+                print("Warning: edge of grid for %s: %g. Consider expanding search range" % (k,reg_cv.best_params_[k]))
+    
     return reg_cv, cv_results
 
 def average_flavor_predictions(df_performance, conngroups=None, include_predicted_and_true_in_output=False):

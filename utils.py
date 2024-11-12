@@ -28,14 +28,19 @@ def krakendir(dirtype='data'):
             return d
     raise Exception("krakencoder directory not found")
 
-def add_krakencoder_package(quiet=False):
+def add_krakencoder_package(quiet=False, force_sourcedir=False):
     """
     Adds the krakencoder package to the path, if it is not already there.
     First checks if it is installed as a package. If not, checks for krakencoder source directory.
     """
+    add_sourcedir=force_sourcedir
+    
     try:
         __import__('krakencoder.utils')
     except ModuleNotFoundError:
+        add_sourcedir=True
+    
+    if add_sourcedir:
         krakencoder_sourcedir=krakendir('source')
         sys.path.append(krakencoder_sourcedir)
         if not quiet:
@@ -62,6 +67,49 @@ def add_bctpy_package(quiet=False):
         sys.path.append(bctpy_dir)
         if not quiet:
             print("Added %s to path" % (bctpy_dir))
+
+
+def flatlist(l):
+    """
+    Flatten a list of lists (useful for argparse lists)
+    """
+    if l is None:
+        return []
+    lnew=[]
+    for i in l:
+        if isinstance(i,str):
+            lnew+=[i]
+        else:
+            try:
+                iter(i)
+                lnew+=i
+            except:
+                lnew+=[i]
+    #return [x for y in l for x in y]
+    return lnew
+
+def clean_args(args, arg_defaults={}, flatten=True):
+    """
+    Clean up an argparse namespace by copying default values for missing arguments and flattening list-based arguments
+    """
+    #copy defaults when not provided
+    for k,v in vars(args).items():
+        if k in arg_defaults:
+            if v is None:
+                setattr(args,k,arg_defaults[k])
+
+    if flatten:
+        #flatten list-based arguments
+        for k,v in vars(args).items():
+            if isinstance(v,str):
+                #str are iterable but not lists
+                continue
+            try:
+                iter(v)
+                setattr(args,k,flatlist(v))
+            except:
+                continue
+    return args
 
 def iterable(x):
     """

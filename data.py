@@ -187,11 +187,12 @@ def get_study_info(studyname='HCP', studyfolder=None, retest=False, rawdata_sim=
     
     return studyinfo
 
-def load_study_data(studyname='HCP', studyfolder=None, combine_type='mean', exclude_flavor_string=None, 
+def load_study_data(studyname='HCP', studyfolder=None, combine_type='mean', only_include_conntypes=None, exclude_flavor_string=None, 
                     latent_or_raw_spec=None,
                     prediction_sim_input='fusion',
                     retest=False,
-                    sex_filter=None, age_range=None):
+                    sex_filter=None, age_range=None,
+                    override_study_info=None):
     """
     Load demographics and data for a specific study. Can be either latent data, raw connectome data, or predicted connectomes (when available for a study).
     Will exclude certain flavors if exclude_flavor_string is provided. Will perform "fusion" by averaging across groups of flavors, if necessary.
@@ -238,22 +239,17 @@ def load_study_data(studyname='HCP', studyfolder=None, combine_type='mean', excl
         * studyname, latentdata_sim, rawdata_sim, prediction_sim, encfile, encfile2, twininfo_file, Tdemo, subjects, ...
     """
 
-    latentdata_sim, rawdata_sim, prediction_sim = parse_data_spec(latent_or_raw_spec)
-    
-    latentdata_sim=normalize_sim_fun_name(latentdata_sim)
-    rawdata_sim=normalize_sim_fun_name(rawdata_sim)
-    prediction_sim=normalize_sim_fun_name(prediction_sim)
-    
-    latent_average_after_sim=False
-    latentdata_sim_orig=latentdata_sim
-    if latentdata_sim is not None and latentdata_sim.endswith('.post'):
-        latentdata_sim=latentdata_sim.replace('.post','')
-        latent_average_after_sim=True
-    
+    latentdata_sim, rawdata_sim, prediction_sim, simpost_info = parse_data_spec(latent_or_raw_spec, normalize=True, return_post_info=True)
+    latent_average_after_sim=simpost_info['latent_average_after_similarity']
+    latentdata_sim_orig=simpost_info['latentdata_similarity_orig']
+
     if studyfolder is None:
         studyfolder=krakendir()
     
     studyinfo = get_study_info(studyname=studyname, studyfolder=studyfolder, retest=retest, rawdata_sim=rawdata_sim, prediction_sim=prediction_sim)
+    if override_study_info is not None:
+        for k,v in override_study_info.items():
+            studyinfo[k]=v
     
     Tdemo=studyinfo['Tdemo']
     subjects=studyinfo['subjects']
@@ -295,6 +291,8 @@ def load_study_data(studyname='HCP', studyfolder=None, combine_type='mean', excl
         encfile='rawdata_%ssim' % (rawdata_sim)
         encfile2=None
         conntypes=[canonical_data_flavor(c) for c in get_hcp_data_flavors(fc_filter_list=["hpf"])]
+        if only_include_conntypes is not None:
+            conntypes=[c for c in conntypes if canonical_data_flavor(c,accept_unknowns=True) in only_include_conntypes]
         if exclude_flavor_string:
             conntypes=[c for c in conntypes if exclude_flavor_string not in c]
             
@@ -348,6 +346,8 @@ def load_study_data(studyname='HCP', studyfolder=None, combine_type='mean', excl
         encfile='kraken_%ssim' % (prediction_sim)
         encfile2=None
         conntypes=[canonical_data_flavor(c) for c in get_hcp_data_flavors(fc_filter_list=["hpf"])]
+        if only_include_conntypes is not None:
+            conntypes=[c for c in conntypes if canonical_data_flavor(c,accept_unknowns=True) in only_include_conntypes]
         if exclude_flavor_string:
             conntypes=[c for c in conntypes if exclude_flavor_string not in c]
         
@@ -392,6 +392,8 @@ def load_study_data(studyname='HCP', studyfolder=None, combine_type='mean', excl
         _, conndata_alltypes = load_hcp_data(subjects=subjects, conn_name_list=conntypes, load_retest=False, quiet=False, keep_diagonal=False)
         
         conntypes=list(conndata_alltypes.keys())
+        if only_include_conntypes is not None:
+            conntypes=[c for c in conntypes if canonical_data_flavor(c,accept_unknowns=True) in only_include_conntypes]
         if exclude_flavor_string:
             conntypes=[c for c in conntypes if exclude_flavor_string not in c]
         
@@ -477,9 +479,11 @@ def load_study_data(studyname='HCP', studyfolder=None, combine_type='mean', excl
         
         ######
         conntypes=[c.strip() for c in Menc['inputtypes']]
+        if only_include_conntypes is not None:
+            conntypes=[c for c in conntypes if canonical_data_flavor(c,accept_unknowns=True) in only_include_conntypes]
         if exclude_flavor_string:
             conntypes=[c for c in conntypes if exclude_flavor_string not in c]
-            
+        
         conngroups=get_conngroup_dict(conntypes)
         
         if 'encoded_alltypes' in Menc:
@@ -603,7 +607,7 @@ def normalize_sim_fun_name(sim=None):
     else:
         return sim
     
-def parse_data_spec(latent_or_raw_spec):
+def parse_data_spec(latent_or_raw_spec, normalize=True, return_post_info=False):
     raw_conndata_similarity=None
     predict_conndata_similarity=None
     latent_similarity=None
@@ -621,12 +625,22 @@ def parse_data_spec(latent_or_raw_spec):
     elif latent_or_raw_spec.startswith("latent"):
         if latent_or_raw_spec.startswith("latent="):
             latent_similarity=latent_or_raw_spec.split("=")[1]
-
-    latent_similarity=normalize_sim_fun_name(latent_similarity)
-    raw_conndata_similarity=normalize_sim_fun_name(raw_conndata_similarity)
-    predict_conndata_similarity=normalize_sim_fun_name(predict_conndata_similarity)
     
-    return latent_similarity, raw_conndata_similarity, predict_conndata_similarity
+    if normalize:
+        latent_similarity=normalize_sim_fun_name(latent_similarity)
+        raw_conndata_similarity=normalize_sim_fun_name(raw_conndata_similarity)
+        predict_conndata_similarity=normalize_sim_fun_name(predict_conndata_similarity)
+    
+    if return_post_info:
+        latent_average_after_similarity=False
+        latentdata_similarity_orig=latent_similarity
+        if latent_similarity is not None and latent_similarity.endswith('.post'):
+            latent_similarity=latent_similarity.replace('.post','')
+            latent_average_after_similarity=True
+        post_info=dict(latent_average_after_similarity=latent_average_after_similarity, latentdata_similarity_orig=latentdata_similarity_orig)
+        return latent_similarity, raw_conndata_similarity, predict_conndata_similarity, post_info
+    else:
+        return latent_similarity, raw_conndata_similarity, predict_conndata_similarity
 
 def get_conngroup_dict(conntypes):
     conngroups={}

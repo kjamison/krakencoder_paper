@@ -542,7 +542,9 @@ def plot_family_similarity_violins(df_fam_performance, conntypes, stat_list, fam
 #################################################################################################
 def plot_prediction_barplot(df_performance, demo_var_list=None, input_flavors=None, siglist=[], pval_thresh=.01,
                              enc_is_cosinesim=False, enc_is_pc=False, rawdata=False, 
-                             plottitle=None, figdpi=100, closeall=True,
+                             fontsize_datavals_override=None, figsize=None,
+                             plottitle=None, figdpi=100, closeall=True, 
+                             legend_columns=None,legend_location='upper right',legend_bbox_to_anchor=(1, .9),
                              output_file=None):
     """
     Plot the prediction performance as a barplot with significance whiskers for each demographic variable
@@ -572,7 +574,9 @@ def plot_prediction_barplot(df_performance, demo_var_list=None, input_flavors=No
     if closeall:
         plt.close('all') #close any previous figures (especially useful in jupyter notebooks)
     
-    if len(demo_var_list) <= 3:
+    if figsize is not None:
+        fig=plt.figure(figsize=figsize,facecolor='w',dpi=figdpi) #for the Age+Sex+Cog
+    elif len(demo_var_list) <= 3:
         fig=plt.figure(figsize=(15,5),facecolor='w',dpi=figdpi) #for the Age+Sex+Cog
         #add dpi=300 for publication?
     else:
@@ -840,6 +844,8 @@ def plot_prediction_barplot(df_performance, demo_var_list=None, input_flavors=No
     new_fontsize_datavals=12
     if len(dataname_toplot_list) > 3:
         new_fontsize_datavals=8
+    if fontsize_datavals_override:
+        new_fontsize_datavals=fontsize_datavals_override
     for ht in htxt_list:
         ht.set_fontsize(new_fontsize_datavals)
     
@@ -930,7 +936,9 @@ def plot_prediction_barplot(df_performance, demo_var_list=None, input_flavors=No
             #legend_ncol=len(hbar_legend_names)//2
         else:
             legend_ncol=1
-        hl=plt.legend(hbar_legend_list,hbar_legend_names,loc='upper right',bbox_to_anchor=(1, .9), fontsize=fontsize, title='Prediction input',ncol=legend_ncol)
+        if legend_columns is not None:
+            legend_ncol=legend_columns
+        hl=plt.legend(hbar_legend_list,hbar_legend_names,loc=legend_location,bbox_to_anchor=legend_bbox_to_anchor, fontsize=fontsize, title='Prediction input',ncol=legend_ncol)
         hl.get_title().set_fontsize(fontsize)
 
     #output_dir=os.path.join(krakendir(),'demographic_prediction_figures')
